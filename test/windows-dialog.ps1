@@ -1,7 +1,7 @@
 ﻿param([string] $PublicRef)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
-$ui = [Windows.Automation.AutomationElement]
+$ui = [System.Windows.Automation.AutomationElement]
 # Some Server WinForms providers expose native child controls as Pane. Send test input
 # only to HWNDs owned by this installation of our dialog in the disposable runner.
 Add-Type -TypeDefinition @'
@@ -32,6 +32,9 @@ foreach ($principal in @($sid, [Security.Principal.SecurityIdentifier]::new('S-1
     $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($principal, 'FullControl', 'ContainerInherit,ObjectInherit', 'None','Allow'))
 }
 Set-Acl $root $acl
+$env:TEMP = Join-Path $root 'temp'
+$null = New-Item -Type Directory $env:TEMP
+$env:TMP = $env:TEMP
 $env:CODEX_HOME = Join-Path $root '.codex'
 $env:CODEX_ELECTRON_USER_DATA_PATH = Join-Path $root 'desktop-data'
 $env:SWORNCARD_CONNECT_PAT = $null
@@ -48,16 +51,16 @@ function Wait-For([scriptblock] $condition, [string] $description) {
     throw "Timed out waiting for $description"
 }
 function Element($window, [string] $name) {
-    $byId = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.PropertyCondition]::new($ui::AutomationIdProperty,$name))
+    $byId = $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.PropertyCondition]::new($ui::AutomationIdProperty,$name))
     if ($byId) { return $byId }
     # Older WinForms UIA providers expose Win32 IDs; match only children of this test-owned window.
-    $found = $window.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+    $found = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
     foreach ($child in $found) {
         $info = $child.Current
-        if ($name -eq 'PersonalAccessToken' -and ($info.ControlType -eq [Windows.Automation.ControlType]::Edit -or $info.ClassName -like "WindowsForms*.EDIT.*")) {return $child}
+        if ($name -eq 'PersonalAccessToken' -and ($info.ControlType -eq [System.Windows.Automation.ControlType]::Edit -or $info.ClassName -like "WindowsForms*.EDIT.*")) {return $child}
         if ($name -eq 'Save' -and $info.Name -in @('Сохранить','Готово')) {return $child}
         if ($name -eq 'Cancel' -and $info.Name -eq 'Отмена') {return $child}
-        if ($name -eq 'Status' -and ($info.ControlType -eq [Windows.Automation.ControlType]::Text -or $info.ClassName -like "WindowsForms*.STATIC.*") -and $info.Name -notlike 'Вставьте PAT*') {return $child}
+        if ($name -eq 'Status' -and ($info.ControlType -eq [System.Windows.Automation.ControlType]::Text -or $info.ClassName -like "WindowsForms*.STATIC.*") -and $info.Name -notlike 'Вставьте PAT*') {return $child}
     }
 }
 function Set-Field($element, [string]$value) {

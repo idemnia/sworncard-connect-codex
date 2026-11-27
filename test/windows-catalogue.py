@@ -78,8 +78,6 @@ with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fixture) as fixture:
         desktop = Path(sys.argv[1]).parent.parent / "ChatGPT.exe"
         subprocess.run(["powershell.exe", "-NoProfile", "-File", str(Path(__file__).with_name("reopen-desktop.ps1")),
                         str(desktop)], check=True, timeout=70)
-        if "initialize" in calls:
-            print("Reopened Desktop contacted the authenticated fixture.")
         p = subprocess.Popen([sys.argv[1], "app-server", "--listen", "stdio://"], cwd=home.parent,
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, encoding="utf-8")
         try:
@@ -118,7 +116,9 @@ def check_file(file):
                 raise
             time.sleep(0.5)
 
-for file in home.rglob("*"):
+assert Path(os.environ["CODEX_ELECTRON_USER_DATA_PATH"]).parent == home.parent
+assert Path(os.environ["TEMP"]).parent == home.parent and os.environ["TMP"] == os.environ["TEMP"]
+for file in home.parent.rglob("*"):
     if file != config:
         check_file(file)
-print("Passed: synthetic PAT remained in the personal configuration.")
+print("Passed: scanned the disposable Codex, Electron and temp directories for the synthetic PAT.")
