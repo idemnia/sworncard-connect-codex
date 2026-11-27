@@ -37,7 +37,6 @@ $env:CODEX_ELECTRON_USER_DATA_PATH = Join-Path $root 'desktop-data'
 $env:SWORNCARD_CONNECT_PAT = $null
 $exeName = 'SwornCardSetup.exe'
 $workspace = $PWD.Path
-$exitTag = '0.2.0-alpha.5'
 
 function Wait-For([scriptblock] $condition, [string] $description) {
     $deadline = [DateTime]::UtcNow.AddSeconds(50)
@@ -87,7 +86,7 @@ function Open-Setup {
 try {
     # Launch the installed Desktop on the empty runner, apart from the test's app-server RPC calls.
     $desktop = Start-Process (Join-Path $app.InstallLocation 'app/ChatGPT.exe') -PassThru
-    $null = Wait-For { (Get-Process -Name ChatGPT -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1) } 'official Desktop window'
+    $desktopWindow = Wait-For { (Get-Process -Name ChatGPT -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1) } 'official Desktop window'
     Write-Host "Opened clean official Codex Desktop $($app.Version)"
     if ($PublicRef) {
         & $codex plugin marketplace add https://github.com/idemnia/sworncard-connect-codex.git --ref $PublicRef
@@ -95,7 +94,13 @@ try {
     if ($LASTEXITCODE) {throw 'Marketplace installation failed'}
     & $codex plugin add sworncard-connect@sworncard-connect
     if ($LASTEXITCODE) {throw 'Plugin installation failed'}
-    $installed = Join-Path $env:CODEX_HOME "plugins/cache/sworncard-connect/sworncard-connect/$exitTag/skills/sworncard-setup/scripts/$exeName"
+    $cache = Join-Path $env:CODEX_HOME 'plugins/cache/sworncard-connect/sworncard-connect'
+    $versions = @(Get-ChildItem -LiteralPath $cache -Directory)
+    if ($versions.Count -ne 1) {throw 'Expected a single installed plugin version in the clean profile'}
+    $manifest = Get-Content -Raw -LiteralPath (Join-Path $versions[0].FullName '.codex-plugin/plugin.json') | ConvertFrom-Json
+    if ($manifest.name -ne 'sworncard-connect' -or $manifest.version -ne $versions[0].Name) {throw 'Installed manifest and cache disagree'}
+    if ($PublicRef -and $PublicRef -ne "v$($manifest.version)") {throw 'The public release tag and installed plugin version disagree'}
+    $installed = Join-Path $versions[0].FullName "skills/sworncard-setup/scripts/$exeName"
     if (!(Test-Path -LiteralPath $installed)) {throw 'Missing installed Windows dialog'}
     $config = Join-Path $env:CODEX_HOME 'config.toml'
     $original = (Get-FileHash $config).Hash
@@ -138,6 +143,14 @@ try {
     }
     # A restarted process must actually authenticate. Use a loopback fixture; the installer pins the real RU URL.
     $env:SWORNCARD_CONNECT_PAT = $null
+    # Stop the clean UI and its own child processes before inspecting the profile.
+    if (!$desktopWindow.HasExited) {
+        $null = $desktopWindow.CloseMainWindow()
+        if (!$desktopWindow.WaitForExit(5000)) {
+            & taskkill.exe /PID $desktopWindow.Id /T /F | Out-Null
+            if (!$desktopWindow.WaitForExit(5000)) {throw 'Clean Desktop did not close'}
+        }
+    }
     python (Join-Path $PSScriptRoot 'windows-catalogue.py') $codex
     if ($LASTEXITCODE) {throw 'Catalogue check failed'}
 } finally {

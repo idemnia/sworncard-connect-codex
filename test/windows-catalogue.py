@@ -8,6 +8,7 @@ import secrets
 import subprocess
 import sys
 import threading
+import time
 import tomllib
 
 home = Path(os.environ["CODEX_HOME"])
@@ -91,12 +92,27 @@ with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fixture) as fixture:
 
 # Search disposable client state for the synthetic secret without logging any file contents.
 needle = header.split(" ", 1)[1].encode()
+def check_file(file):
+    # Desktop background tasks can briefly lock or remove their own temporary checkout files.
+    for attempt in range(10):
+        try:
+            if not file.is_file():
+                return
+            with file.open("rb") as stream:
+                overlap = b""
+                while chunk := stream.read(65536):
+                    data = overlap + chunk
+                    assert needle not in data, "Synthetic credential appeared outside the personal config"
+                    overlap = data[-(len(needle) - 1):]
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if attempt == 9:
+                raise
+            time.sleep(0.5)
+
 for file in home.rglob("*"):
-    if file != config and file.is_file() and file.stat().st_size:
-        with file.open("rb") as stream:
-            overlap = b""
-            while chunk := stream.read(65536):
-                data = overlap + chunk
-                assert needle not in data, "Synthetic credential appeared outside the personal config"
-                overlap = data[-(len(needle) - 1):]
+    if file != config:
+        check_file(file)
 print("Passed: synthetic PAT remained in the personal configuration.")
