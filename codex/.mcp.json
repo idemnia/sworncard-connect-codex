@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "sworncard": {
+      "url": "https://connect.sworncard.ru/mcp",
+      "bearer_token_env_var": "SWORNCARD_CONNECT_PAT"
+    }
+  }
+}
