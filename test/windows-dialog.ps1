@@ -109,18 +109,48 @@ try {
         throw 'Installed Windows dialog differs from the verified independent build'
     }
     $config = Join-Path $env:CODEX_HOME 'config.toml'
+    # Model the field report: a separate Windows principal has inherited read/execute on config.toml.
+    $observer = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-546')
+    $acl = Get-Acl $env:CODEX_HOME
+    $readRule = [Security.AccessControl.FileSystemAccessRule]::new($observer,'ReadAndExecute,Synchronize','ContainerInherit,ObjectInherit','None','Allow')
+    $acl.AddAccessRule($readRule)
+    Set-Acl $env:CODEX_HOME $acl
+    $childRules = (Get-Acl $config).GetAccessRules($false,$true,[Security.Principal.SecurityIdentifier])
+    if (!($childRules | Where-Object {$_.IdentityReference.Value -eq $observer.Value -and ($_.FileSystemRights -band 1)})) {throw 'Missing inherited sandbox-shaped read rule'}
     $original = (Get-FileHash $config).Hash
     $window = Open-Setup
     Click (Element $window 'Cancel')
     if (!$dialog.WaitForExit(5000) -or (Get-FileHash $config).Hash -ne $original) {throw 'Cancellation changed the configuration'}
     $id = 'pc_' + (New-Part)
     $old = ''
-    foreach ($stage in @('create','rotate')) {
+    $tokens = @()
+    # A writable profile must still fail before a credential is staged.
+    $fileAcl = Get-Acl $config
+    $changed = Get-Acl $config
+    $changed.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($observer,'Write','Allow'))
+    Set-Acl $config $changed
+    try {
+        $window = Open-Setup
+        Set-Field (Element $window 'PersonalAccessToken') ('scpat1.' + $id + '.' + (New-Part))
+        Click (Element $window 'Save')
+        $null = Wait-For {(Element $window 'Status').Current.Name -like '*права записи*'} 'refusal on a writable config'
+        Click (Element $window 'Cancel')
+        if (!$dialog.WaitForExit(5000) -or (Get-FileHash $config).Hash -ne $original) {throw 'Writable configuration was changed'}
+    } finally {Set-Acl $config $fileAcl}
+    foreach ($stage in @('create','rotate','migrate')) {
         if ($stage -eq 'rotate') {
             # Model the previous release's working bundled server for this same connection.
             $env:SWORNCARD_CONNECT_PAT = $old
             $settings = [IO.File]::ReadAllText($config)
             $settings = $settings.Replace('enabled = false', 'enabled = true')
+            [IO.File]::WriteAllText($config,$settings,[Text.UTF8Encoding]::new($false))
+        }
+        if ($stage -eq 'migrate') {
+            # One old-format record, only in this disposable profile. No real credential is used.
+            $settings = [IO.File]::ReadAllText($config)
+            $legacyTable = "[mcp_servers.sworncard_$id.http_headers]`r`nAuthorization = `"Bearer $old`""
+            $settings = [regex]::Replace($settings,'(?m)^http_headers_helper = [^\r\n]+','') + "`r`n$legacyTable`r`n"
+            if (!$settings.Contains("Bearer $old")) {throw 'Missing synthetic legacy migration fixture'}
             [IO.File]::WriteAllText($config,$settings,[Text.UTF8Encoding]::new($false))
         }
         $window = Open-Setup
@@ -143,7 +173,8 @@ try {
         Click (Element $window 'Save')
         if (!$dialog.WaitForExit(5000) -or $dialog.ExitCode -ne 0) {throw 'Setup did not close successfully'}
         $text = [IO.File]::ReadAllText($config)
-        if (!$text.Contains("sworncard_$id") -or !$text.Contains("Bearer $token") -or !$text.Contains('https://connect.sworncard.ru/mcp') -or ($old -and $text.Contains($old))) {throw 'Personal configuration mismatch'}
+        if (!$text.Contains("sworncard_$id") -or $text.Contains($token) -or !$text.Contains("http_headers_helper") -or !$text.Contains('https://connect.sworncard.ru/mcp') -or ($old -and $text.Contains($old))) {throw 'Personal configuration mismatch'}
+        $tokens += $token
         $old = $token
         Write-Host "Passed Windows GUI step: $stage"
     }
@@ -157,7 +188,7 @@ try {
             if (!$desktopWindow.WaitForExit(5000)) {throw 'Clean Desktop did not close'}
         }
     }
-    python (Join-Path $PSScriptRoot 'windows-catalogue.py') $codex
+    ($tokens -join ' ') | python (Join-Path $PSScriptRoot 'windows-catalogue.py') $codex
     if ($LASTEXITCODE) {throw 'Catalogue check failed'}
 } finally {
     if ($dialog -and !$dialog.HasExited) { $dialog.Kill() }

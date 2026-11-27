@@ -20,7 +20,11 @@ assert snapshot["plugins"]["sworncard-connect@sworncard-connect"]["mcp_servers"]
 servers = snapshot["mcp_servers"]
 name, entry = next((n, s) for n, s in servers.items() if n.startswith("sworncard_pc_"))
 assert entry["url"] == "https://connect.sworncard.ru/mcp"
-header = entry["http_headers"]["Authorization"]
+tokens = sys.stdin.readline().strip().split()
+assert len(tokens) == 3 and len(set(tokens)) == 3
+assert set(entry) == {"url", "http_headers_helper"} and "--mcp-headers pc_" in entry["http_headers_helper"]
+assert all(token not in raw for token in tokens)
+header = "Bearer " + tokens[-1]
 calls = []
 
 class Fixture(http.server.BaseHTTPRequestHandler):
@@ -95,7 +99,8 @@ with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fixture) as fixture:
         fixture.shutdown()
 
 # Search disposable client state for the synthetic secret without logging any file contents.
-needle = header.split(" ", 1)[1].encode()
+needles = [token.encode(encoding) for token in tokens for encoding in ("utf-8","utf-16-le")]
+max_length = max(map(len, needles))
 def check_file(file):
     # Desktop background tasks can briefly lock or remove their own temporary checkout files.
     for attempt in range(10):
@@ -106,8 +111,8 @@ def check_file(file):
                 overlap = b""
                 while chunk := stream.read(65536):
                     data = overlap + chunk
-                    assert needle not in data, "Synthetic credential appeared outside the personal config"
-                    overlap = data[-(len(needle) - 1):]
+                    assert all(needle not in data for needle in needles), "Synthetic credential appeared in client files"
+                    overlap = data[-(max_length - 1):]
             return
         except FileNotFoundError:
             return
@@ -119,6 +124,5 @@ def check_file(file):
 assert Path(os.environ["CODEX_ELECTRON_USER_DATA_PATH"]).parent == home.parent
 assert Path(os.environ["TEMP"]).parent == home.parent and os.environ["TMP"] == os.environ["TEMP"]
 for file in home.parent.rglob("*"):
-    if file != config:
-        check_file(file)
+    check_file(file)
 print("Passed: scanned the disposable Codex, Electron and temp directories for the synthetic PAT.")
