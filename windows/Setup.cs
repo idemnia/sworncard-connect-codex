@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
@@ -30,20 +31,33 @@ internal static class Setup {
         return obj;
     }
 
-    // Use the registered OpenAI Desktop package, never an executable from the active project or PATH.
-    static async Task<string> DesktopBinary() {
-        string shell = Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe");
-        const string query = "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); " +
-            "(Get-AppxPackage -Name OpenAI.Codex | Where-Object PackageFamilyName -eq 'OpenAI.Codex_2p2nqsd0c76g0').InstallLocation";
-        using (var p = Start(shell, "-NoLogo -NoProfile -NonInteractive -Command \"" + query + "\"")) {
-            try {
-                string root = (await Within(p.StandardOutput.ReadToEndAsync())).Trim();
-                string path = Path.Combine(root, @"app\resources\codex.exe");
-                if (!Path.IsPathRooted(root) || root.Contains("\n") || !File.Exists(path))
-                    throw new SetupError("Не найден установленный Codex Desktop для Windows.");
-                return path;
-            } finally { Stop(p); }
-        }
+    [DllImport("kernel32", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    static extern int GetPackagesByPackageFamily(string family, ref int count, IntPtr names, ref int chars, IntPtr buffer);
+    [DllImport("kernel32", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    static extern int GetPackagePathByFullName(string name, ref int count, StringBuilder path);
+
+    // Windows resolves the registered publisher and package for the current user.
+    static string DesktopBinary() {
+        const string family = "OpenAI.Codex_2p2nqsd0c76g0";
+        const int insufficientBuffer = 122;
+        int count = 0, chars = 0;
+        var missing = new SetupError("Не найден установленный Codex Desktop для Windows.");
+        if (GetPackagesByPackageFamily(family, ref count, IntPtr.Zero, ref chars, IntPtr.Zero) != insufficientBuffer || count < 1) throw missing;
+        IntPtr names = Marshal.AllocHGlobal(checked(count * IntPtr.Size));
+        IntPtr buffer = Marshal.AllocHGlobal(checked(chars * 2));
+        try {
+            if (GetPackagesByPackageFamily(family, ref count, names, ref chars, buffer) != 0) throw missing;
+            for (int i = 0; i < count; i++) {
+                string fullName = Marshal.PtrToStringUni(Marshal.ReadIntPtr(names, i * IntPtr.Size));
+                int length = 0;
+                if (GetPackagePathByFullName(fullName, ref length, null) != insufficientBuffer) continue;
+                var path = new StringBuilder(length);
+                if (GetPackagePathByFullName(fullName, ref length, path) != 0) continue;
+                string exe = Path.Combine(path.ToString(), @"app\resources\codex.exe");
+                if (File.Exists(exe)) return exe;
+            }
+            throw missing;
+        } finally { Marshal.FreeHGlobal(buffer); Marshal.FreeHGlobal(names); }
     }
 
     static Process Start(string exe, string arguments) {
@@ -69,12 +83,6 @@ internal static class Setup {
     static void Stop(Process p) {
         try { p.StandardInput.Close(); if (!p.WaitForExit(1000)) p.Kill(); }
         catch (InvalidOperationException) { /* Already exited. */ }
-    }
-
-    static async Task<T> Within<T>(Task<T> task) {
-        if (await Task.WhenAny(task, Task.Delay(25000)) != task)
-            throw new SetupError("Codex не ответил вовремя. Попробуйте подключение ещё раз.");
-        return await task;
     }
 
     static void CheckProfile() {
@@ -156,7 +164,7 @@ internal static class Setup {
         var match = Token.Match(secret);
         if (!match.Success) throw new SetupError("Скопируйте весь PAT из кабинета Idemnia.");
         CheckProfile();
-        string binary = await DesktopBinary();
+        string binary = DesktopBinary();
         using (var p = Start(binary, "app-server --listen stdio://")) {
             try {
                 var work = WriteSettings(p, "sworncard_" + match.Groups[1].Value, secret);
@@ -172,6 +180,14 @@ internal static class Setup {
     static int Main(string[] args) {
         if (args.Length != 0 || !Environment.UserInteractive) return 2;
         Application.EnableVisualStyles();
+        try {
+            string manifest = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"..\..\..\.mcp.json");
+            if (!Equals(Get(Json.DeserializeObject(File.ReadAllText(manifest)), "mcpServers", "sworncard", "url"), Endpoint))
+                throw new InvalidDataException();
+        } catch {
+            MessageBox.Show("Откройте настройку из установленного RU-плагина SwornCard.", Title);
+            return 2;
+        }
         using (var form = new Form {Text = Title, StartPosition = FormStartPosition.CenterScreen,
                 FormBorderStyle = FormBorderStyle.FixedDialog, MinimizeBox = false, MaximizeBox = false,
                 ClientSize = new Size(466,220), AutoScaleMode = AutoScaleMode.Font}) {

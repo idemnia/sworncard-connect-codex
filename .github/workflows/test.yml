@@ -28,21 +28,25 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Install official Codex Desktop in a clean Windows runner
-        shell: powershell
-        run: ./test/install-desktop.ps1
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.416
       - name: Build the Windows dialog
         shell: powershell
         run: ./windows/build.ps1 -Output "$env:RUNNER_TEMP/SwornCardSetup.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-dialog
+          path: ${{ runner.temp }}/SwornCardSetup.exe
       - name: Verify the shipped executable matches its source
         shell: powershell
         run: |
           $built = (Get-FileHash "$env:RUNNER_TEMP/SwornCardSetup.exe").Hash
           $shipped = (Get-FileHash "codex/skills/sworncard-setup/scripts/SwornCardSetup.exe").Hash
           if ($built -ne $shipped) {throw 'Windows executable mismatch'}
+      - name: Install official Codex Desktop in a clean Windows runner
+        shell: powershell
+        run: ./test/install-desktop.ps1
       - name: Test clean Desktop, masked dialog, cancellation, rotation and catalogue
         shell: powershell
         env:
