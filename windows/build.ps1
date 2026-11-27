@@ -8,5 +8,5 @@ $ref = Join-Path ${env:ProgramFiles(x86)} 'Reference Assemblies/Microsoft/Framew
 $refs = 'mscorlib','System','System.Core','System.Drawing','System.Windows.Forms','System.Web.Extensions' | ForEach-Object { '/reference:' + (Join-Path $ref "$_.dll") }
 $outputPath = [IO.Path]::GetFullPath($Output)
 [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($outputPath))
-dotnet $csc /nologo /noconfig /nostdlib+ /deterministic+ /optimize+ /target:winexe /platform:anycpu /codepage:65001 "/pathmap:$PSScriptRoot=/src" "/out:$outputPath" @refs (Join-Path $PSScriptRoot 'Setup.cs')
+dotnet $csc /nologo /noconfig /nostdlib+ /deterministic+ /optimize+ /target:winexe /platform:anycpu /codepage:65001 "/pathmap:$PSScriptRoot=/src" "/out:$outputPath" @refs (Join-Path $PSScriptRoot 'Setup.cs') (Join-Path $PSScriptRoot 'WindowsCredential.cs')
 if ($LASTEXITCODE) { throw 'Windows setup build failed' }
