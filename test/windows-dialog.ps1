@@ -132,6 +132,18 @@ try {
     Click (Element $window 'Cancel')
     if (!$dialog.WaitForExit(5000) -or (Get-FileHash $config).Hash -ne $original) {throw 'Cancellation changed the configuration'}
     $id = 'pc_' + (New-Part)
+    # Exercise the installed provider's authorization policy, without touching any credential.
+    $assembly = [Reflection.Assembly]::Load([IO.File]::ReadAllBytes($installed))
+    $policy = $assembly.GetType('WindowsCredential').GetMethod('MatchesDesktopSession', [Reflection.BindingFlags]'Static,NonPublic')
+    foreach ($case in @(
+        @{ Inputs=@($false,$false,$sid,$sid,[long]1,[long]1); Allowed=$true },
+        @{ Inputs=@($true,$false,$sid,$sid,[long]1,[long]1); Allowed=$false },
+        @{ Inputs=@($false,$true,$sid,$sid,[long]1,[long]1); Allowed=$false },
+        @{ Inputs=@($false,$false,$observer,$sid,[long]1,[long]1); Allowed=$false },
+        @{ Inputs=@($false,$false,$sid,$sid,[long]2,[long]1); Allowed=$false }
+    )) {
+        if ($policy.Invoke($null, $case.Inputs) -ne $case.Allowed) {throw 'Desktop user/logon policy mismatch'}
+    }
     # Public, unissued fixture ID. A normal process invoking the provider cannot receive credentials.
     $probeInfo = [Diagnostics.ProcessStartInfo]::new($installed, "--mcp-headers $id")
     $probeInfo.UseShellExecute = $false
