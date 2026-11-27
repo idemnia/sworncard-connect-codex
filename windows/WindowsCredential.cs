@@ -4,6 +4,8 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Diagnostics;
+using System.Security.Principal;
+using Microsoft.Win32.SafeHandles;
 using System.Web.Script.Serialization;
 
 // One generic credential per RU connection, local to this user's logon on this computer.
@@ -21,9 +23,9 @@ internal static class WindowsCredential {
         public IntPtr Attributes;
         public string TargetAlias, UserName;
     }
-    [DllImport("advapi32", EntryPoint = "CredWriteW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [DllImport("advapi32", EntryPoint = "CredWriteW", ExactSpelling = true, CharSet = CharSet.Unicode, SetLastError = true)]
     static extern bool CredWrite(ref Credential credential, uint flags);
-    [DllImport("advapi32", EntryPoint = "CredReadW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [DllImport("advapi32", EntryPoint = "CredReadW", ExactSpelling = true, CharSet = CharSet.Unicode, SetLastError = true)]
     static extern bool CredRead(string target, uint type, uint flags, out IntPtr value);
     [DllImport("advapi32")] static extern void CredFree(IntPtr value);
 
@@ -58,6 +60,43 @@ internal static class WindowsCredential {
     static bool SameImage(Process p, string path) {
         return String.Equals(p.MainModule.FileName, path, StringComparison.OrdinalIgnoreCase);
     }
+    [DllImport("advapi32", SetLastError = true)]
+    static extern bool OpenProcessToken(IntPtr process, uint access, out SafeAccessTokenHandle token);
+    [DllImport("advapi32")] static extern bool IsTokenRestricted(IntPtr token);
+    [DllImport("advapi32", SetLastError = true)] static extern bool GetTokenInformation(
+        IntPtr token, int infoClass, IntPtr data, int size, out int needed);
+
+    // TokenStatistics starts with TokenId and AuthenticationId, each a Windows LUID.
+    static long LogonId(IntPtr token) {
+        int size;
+        GetTokenInformation(token, 10, IntPtr.Zero, 0, out size);
+        if (size < 16 || size > 1024) throw new InvalidOperationException();
+        var data = Marshal.AllocHGlobal(size);
+        try {
+            if (!GetTokenInformation(token, 10, data, size, out size)) throw new InvalidOperationException();
+            return Marshal.ReadInt64(data, 8);
+        } finally { Marshal.FreeHGlobal(data); }
+    }
+    static bool AppContainer(IntPtr token) {
+        var value = Marshal.AllocHGlobal(sizeof(int));
+        try {
+            int needed;
+            if (!GetTokenInformation(token, 29, value, sizeof(int), out needed)) throw new InvalidOperationException();
+            return Marshal.ReadInt32(value) != 0;
+        } finally { Marshal.FreeHGlobal(value); }
+    }
+    // Credential Manager scopes the slot to the Windows user/logon. Do not release it from
+    // a restricted token or AppContainer, even if its process has a familiar ancestor.
+    static bool IsDesktopUser(Process client) {
+        SafeAccessTokenHandle handle;
+        if (!OpenProcessToken(client.Handle, 8, out handle)) return false;
+        using (handle)
+        using (var desktop = new WindowsIdentity(handle.DangerousGetHandle()))
+        using (var current = WindowsIdentity.GetCurrent()) {
+            return !IsTokenRestricted(current.Token) && !AppContainer(current.Token) &&
+                current.User == desktop.User && LogonId(current.Token) == LogonId(desktop.Token);
+        }
+    }
     internal static int Supply(string id) {
         if (!Connection.IsMatch(id) || GetFileType(GetStdHandle(-11)) != 3) return 2;
         try {
@@ -65,7 +104,7 @@ internal static class WindowsCredential {
             using (var shell = Parent(self))
             using (var client = Parent(shell)) {
                 if (!SameImage(shell, Path.Combine(Environment.SystemDirectory, "cmd.exe")) ||
-                    !SameImage(client, Setup.DesktopBinary())) return 2;
+                    !SameImage(client, Setup.DesktopBinary()) || !IsDesktopUser(client)) return 2;
             }
             IntPtr handle;
             if (!CredRead(Prefix + id, 1, 0, out handle)) return 1;

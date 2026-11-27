@@ -132,6 +132,13 @@ try {
     Click (Element $window 'Cancel')
     if (!$dialog.WaitForExit(5000) -or (Get-FileHash $config).Hash -ne $original) {throw 'Cancellation changed the configuration'}
     $id = 'pc_' + (New-Part)
+    # Public, unissued fixture ID. A normal process invoking the provider cannot receive credentials.
+    $probeInfo = [Diagnostics.ProcessStartInfo]::new($installed, "--mcp-headers $id")
+    $probeInfo.UseShellExecute = $false
+    $probeInfo.RedirectStandardOutput = $true
+    $probe = [Diagnostics.Process]::Start($probeInfo)
+    if (!$probe.WaitForExit(5000) -or $probe.ExitCode -ne 2 -or $probe.StandardOutput.ReadToEnd().Length) {throw 'Provider accepted an ordinary caller'}
+    $probe.Dispose()
     $old = ''
     $tokens = @()
     # A writable profile must still fail before a credential is staged.
