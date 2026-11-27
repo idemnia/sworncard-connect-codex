@@ -85,10 +85,14 @@ module SworncardSetup
             raise SetupError, 'У этого подключения уже есть собственные настройки MCP. Они сохранены.'
           end
           value = {url: url, http_headers: {'Authorization' => "Bearer #{token}"}}
-          rpc(input, output, 3, 'config/value/write', {
+          if layers.any? { |layer| layer != personal && layer.dig('config', 'mcp_servers', server) }
+            raise SetupError, 'Этой записью MCP управляет другой уровень настроек Codex.'
+          end
+          written = rpc(input, output, 3, 'config/value/write', {
             keyPath: "mcp_servers.#{server}", value: value, mergeStrategy: 'replace',
             expectedVersion: personal.fetch('version')
           })
+          raise SetupError, 'Проверьте политику Codex: личная настройка переопределена.' unless written['status'] == 'ok'
         end
       ensure
         input.close
