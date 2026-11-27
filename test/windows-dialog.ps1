@@ -25,13 +25,28 @@ $app = Get-AppxPackage -Name OpenAI.Codex | Where-Object PackageFamilyName -eq '
 $codex = Join-Path $app.InstallLocation 'app/resources/codex.exe'
 $root = Join-Path $env:USERPROFILE ("sworncard-test-" + [Guid]::NewGuid().ToString('N'))
 $null = New-Item -Type Directory $root
-$acl = Get-Acl $root
-$acl.SetAccessRuleProtection($true, $false)
-$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-foreach ($principal in @($sid, [Security.Principal.SecurityIdentifier]::new('S-1-5-18'))) {
-    $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($principal, 'FullControl', 'ContainerInherit,ObjectInherit', 'None','Allow'))
+# Exercise inherited profile permissions on the fresh runner, as on a user's own PC.
+# Print only object kinds, permission masks and public group categories from the CI fixture.
+function Show-ProfileAcl([string] $path, [string] $kind) {
+    $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $acl = Get-Acl -LiteralPath $path
+    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        $id = $rule.IdentityReference.Value
+        $category = switch ($id) {
+            $me {'self'}
+            'S-1-5-18' {'system'}
+            'S-1-5-32-544' {'administrators'}
+            'S-1-3-0' {'creator-owner'}
+            'S-1-3-4' {'owner-rights'}
+            'S-1-5-32-545' {'users'}
+            'S-1-5-11' {'authenticated-users'}
+            'S-1-1-0' {'everyone'}
+            'S-1-15-2-1' {'all-application-packages'}
+            default {'other'}
+        }
+        Write-Host ("Fixture ACL {0} {1} {2} {3} inherit={4} scope={5}" -f $kind,$category,$rule.AccessControlType,$rule.FileSystemRights,$rule.InheritanceFlags,$rule.PropagationFlags)
+    }
 }
-Set-Acl $root $acl
 $env:TEMP = Join-Path $root 'temp'
 $null = New-Item -Type Directory $env:TEMP
 $env:TMP = $env:TEMP
@@ -109,6 +124,8 @@ try {
         throw 'Installed Windows dialog differs from the verified independent build'
     }
     $config = Join-Path $env:CODEX_HOME 'config.toml'
+    Show-ProfileAcl $env:CODEX_HOME profile
+    Show-ProfileAcl $config config
     $original = (Get-FileHash $config).Hash
     $window = Open-Setup
     Click (Element $window 'Cancel')
