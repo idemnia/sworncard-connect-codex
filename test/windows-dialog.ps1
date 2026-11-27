@@ -91,6 +91,15 @@ try {
     $desktop = Start-Process (Join-Path $app.InstallLocation 'app/ChatGPT.exe') -PassThru
     $desktopWindow = Wait-For { (Get-Process -Name ChatGPT -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1) } 'official Desktop window'
     Write-Host "Opened clean official Codex Desktop $($app.Version)"
+    # Start with the published version that showed the field report. Replace just its catalogue
+    # registration, as required by Codex when a marketplace was pinned to a different ref.
+    $repo = 'https://github.com/idemnia/sworncard-connect-codex.git'
+    & $codex plugin marketplace add $repo --ref v0.2.0-alpha.5
+    if ($LASTEXITCODE) {throw 'Previous marketplace installation failed'}
+    & $codex plugin add sworncard-connect@sworncard-connect
+    if ($LASTEXITCODE) {throw 'Previous plugin installation failed'}
+    & $codex plugin marketplace remove sworncard-connect
+    if ($LASTEXITCODE) {throw 'Previous marketplace ref could not be replaced'}
     if ($PublicRef) {
         & $codex plugin marketplace add https://github.com/idemnia/sworncard-connect-codex.git --ref $PublicRef
     } else { & $codex plugin marketplace add $workspace }
@@ -98,8 +107,9 @@ try {
     & $codex plugin add sworncard-connect@sworncard-connect
     if ($LASTEXITCODE) {throw 'Plugin installation failed'}
     $cache = Join-Path $env:CODEX_HOME 'plugins/cache/sworncard-connect/sworncard-connect'
-    $versions = @(Get-ChildItem -LiteralPath $cache -Directory)
-    if ($versions.Count -ne 1) {throw 'Expected a single installed plugin version in the clean profile'}
+    $expected = (Get-Content -Raw -LiteralPath (Join-Path $workspace 'codex/.codex-plugin/plugin.json') | ConvertFrom-Json).version
+    $versions = @(Get-ChildItem -LiteralPath $cache -Directory | Where-Object Name -eq $expected)
+    if ($versions.Count -ne 1) {throw 'Expected the current installed plugin version'}
     $manifest = Get-Content -Raw -LiteralPath (Join-Path $versions[0].FullName '.codex-plugin/plugin.json') | ConvertFrom-Json
     if ($manifest.name -ne 'sworncard-connect' -or $manifest.version -ne $versions[0].Name) {throw 'Installed manifest and cache disagree'}
     if ($PublicRef -and $PublicRef -ne "v$($manifest.version)") {throw 'The public release tag and installed plugin version disagree'}
