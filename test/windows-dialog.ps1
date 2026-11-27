@@ -58,6 +58,12 @@ function Open-Setup {
     $script:dialog = Start-Process $installed -PassThru
     $hwnd = Wait-For { $dialog.Refresh(); if ($dialog.HasExited) {throw "Dialog exited: $($dialog.ExitCode)"}; if ($dialog.MainWindowHandle -ne 0) {$dialog.MainWindowHandle} } 'WinForms window'
     $window = $ui::FromHandle($hwnd)
+    Write-Host "Helper window: $($window.Current.ClassName) | $($window.Current.Name)"
+    $snapshot = $window.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+    foreach ($el in $snapshot) {
+        $item = $el.Current
+        if (!$item.IsPassword) {Write-Host "Initial control: $($item.ClassName) | $($item.ControlType.ProgrammaticName) | $($item.Name)"}
+    }
     $field = Wait-For {Element $window 'PersonalAccessToken'} 'password edit control'
     if (!$field.Current.IsPassword) {throw 'Masked PAT field missing'}
     return $window
