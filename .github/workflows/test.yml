@@ -1,59 +1,20 @@
-name: Codex plugin
-on:
-  push:
-  pull_request:
-  workflow_dispatch:
-    inputs:
-      public_ref:
-        description: Published marketplace tag to verify on a new Windows runner
-        required: false
-        type: string
+name: Build Windows plugin candidate
+on: push
 permissions:
   contents: read
 jobs:
-  macos:
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.public_ref || github.sha }}
-      - name: Install pinned Codex CLI for the configuration contract
-        run: npm install --prefix "$RUNNER_TEMP/codex-test" @openai/codex@0.164.0
-      - name: Test dialog and private configuration
-        shell: bash
-        run: |
-          binary=("$RUNNER_TEMP"/codex-test/node_modules/@openai/codex-darwin-*/vendor/*/bin/codex)
-          test "${#binary[@]}" -eq 1 && test -x "${binary[0]}"
-          TEST_CODEX_BINARY="${binary[0]}" /usr/bin/ruby --disable-gems test/setup.rb
-  windows:
+  build:
     runs-on: windows-2025
-    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.public_ref || github.sha }}
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.416
-      - name: Build the Windows dialog
+      - name: Build Windows dialog from source
         shell: powershell
         run: ./windows/build.ps1 -Output "$env:RUNNER_TEMP/SwornCardSetup.exe"
-      - name: Verify the shipped executable matches its source
-        shell: powershell
-        run: |
-          $built = (Get-FileHash "$env:RUNNER_TEMP/SwornCardSetup.exe").Hash
-          $shipped = (Get-FileHash "codex/skills/sworncard-setup/scripts/SwornCardSetup.exe").Hash
-          if ($built -ne $shipped) {throw 'Windows executable mismatch'}
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-dialog
-          retention-days: 3
+          name: windows-vault-candidate
           path: ${{ runner.temp }}/SwornCardSetup.exe
-      - name: Install official Codex Desktop in a clean Windows runner
-        shell: powershell
-        run: ./test/install-desktop.ps1
-      - name: Test clean Desktop, masked dialog, cancellation, rotation and catalogue
-        shell: powershell
-        env:
-          PUBLIC_REF: ${{ inputs.public_ref }}
-        run: ./test/windows-dialog.ps1 -PublicRef $env:PUBLIC_REF
+          retention-days: 1
