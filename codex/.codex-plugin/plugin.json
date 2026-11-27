@@ -1,6 +1,6 @@
 {
   "name": "sworncard-connect",
-  "version": "0.2.0-alpha.3",
+  "version": "0.2.0-alpha.4",
   "description": "Passport-authorized service access through Sworncard Connect.",
   "author": {
     "name": "Sworncard"

@@ -1,0 +1,17 @@
+name: Codex plugin
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Codex CLI for the configuration contract
+        run: npm install --prefix "$RUNNER_TEMP/codex-test" @openai/codex@0.164.0
+      - name: Test dialog and private configuration
+        shell: bash
+        run: |
+          binary=("$RUNNER_TEMP"/codex-test/node_modules/@openai/codex-darwin-*/vendor/*/bin/codex)
+          test "${#binary[@]}" -eq 1 && test -x "${binary[0]}"
+          TEST_CODEX_BINARY="${binary[0]}" /usr/bin/ruby --disable-gems test/setup.rb
