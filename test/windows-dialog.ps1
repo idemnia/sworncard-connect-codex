@@ -133,7 +133,7 @@ try {
         $window = Open-Setup
         Set-Field (Element $window 'PersonalAccessToken') ('scpat1.' + $id + '.' + (New-Part))
         Click (Element $window 'Save')
-        $null = Wait-For {(Element $window 'Status').Current.Name -like '*права записи*'} 'refusal on a writable config'
+        $null = Wait-For {(Element $window 'Status').Current.Name -like '*может менять настройки*'} 'refusal on a writable config'
         Click (Element $window 'Cancel')
         if (!$dialog.WaitForExit(5000) -or (Get-FileHash $config).Hash -ne $original) {throw 'Writable configuration was changed'}
     } finally {Set-Acl $config $fileAcl}
