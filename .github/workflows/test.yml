@@ -23,3 +23,13 @@ jobs:
       - name: Install official Codex Desktop in a clean Windows runner
         shell: powershell
         run: ./test/install-desktop.ps1
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.416
+      - name: Build the Windows dialog
+        shell: powershell
+        run: ./windows/build.ps1 -Output "$env:RUNNER_TEMP/SwornCardSetup.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-dialog
+          path: ${{ runner.temp }}/SwornCardSetup.exe
