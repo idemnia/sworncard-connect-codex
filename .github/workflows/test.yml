@@ -15,3 +15,11 @@ jobs:
           binary=("$RUNNER_TEMP"/codex-test/node_modules/@openai/codex-darwin-*/vendor/*/bin/codex)
           test "${#binary[@]}" -eq 1 && test -x "${binary[0]}"
           TEST_CODEX_BINARY="${binary[0]}" /usr/bin/ruby --disable-gems test/setup.rb
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install official Codex Desktop in a clean Windows runner
+        shell: powershell
+        run: ./test/install-desktop.ps1
