@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
+using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -21,7 +22,7 @@ internal static class Setup {
     const string Plugin = "sworncard-connect@sworncard-connect";
     const string Title = "SwornCard · Подключение к Codex";
     static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = 8 * 1024 * 1024 };
-    static readonly Regex Token = new Regex(@"\Ascpat1\.(pc_[A-Za-z0-9_-]{43})\.[A-Za-z0-9_-]{43}\z");
+    internal static readonly Regex Token = new Regex(@"\Ascpat1\.(pc_[A-Za-z0-9_-]{43})\.[A-Za-z0-9_-]{43}\z");
 
     sealed class SetupError : Exception { public SetupError(string text) : base(text) {} }
 
@@ -39,7 +40,7 @@ internal static class Setup {
     static extern int GetPackagePathByFullName(string name, ref int count, StringBuilder path);
 
     // Windows resolves the registered publisher and package for the current user.
-    static string DesktopBinary() {
+    internal static string DesktopBinary() {
         const string family = "OpenAI.Codex_2p2nqsd0c76g0";
         const int insufficientBuffer = 122;
         int count = 0, chars = 0;
@@ -87,37 +88,79 @@ internal static class Setup {
         catch (InvalidOperationException) { /* Already exited. */ }
     }
 
-    static void CheckProfile() {
-        string user = Path.GetFullPath(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
-        string home = Environment.GetEnvironmentVariable("CODEX_HOME") ?? Path.Combine(user, ".codex");
-        if (!Path.IsPathRooted(home)) throw new SetupError("Нужен локальный личный профиль Codex.");
-        home = Path.GetFullPath(home);
-        if (home.StartsWith(@"\\") || !home.StartsWith(user.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase))
-            throw new SetupError("Для личного PAT нужен профиль Codex в каталоге вашего пользователя Windows.");
-        // A plugin install has already created the home. Reject redirects into shared storage.
-        for (var d = new DirectoryInfo(home); d != null; d = d.Parent) {
-            if ((d.Attributes & FileAttributes.ReparsePoint) != 0) throw new SetupError("Профиль Codex находится за файловой ссылкой.");
-            if (String.Equals(d.FullName, user, StringComparison.OrdinalIgnoreCase)) break;
-        }
-        string config = Path.Combine(home, "config.toml");
-        var trusted = new HashSet<string> { WindowsIdentity.GetCurrent().User.Value, "S-1-5-18", "S-1-5-32-544", "S-1-3-0", "S-1-3-4" };
-        CheckAcl(Directory.GetAccessControl(home), trusted);
-        if (File.Exists(config)) {
-            if ((File.GetAttributes(config) & FileAttributes.ReparsePoint) != 0) throw new SetupError("Файл настроек является ссылкой.");
-            CheckAcl(File.GetAccessControl(config), trusted);
+    static readonly HashSet<string> Trusted = new HashSet<string> {
+        WindowsIdentity.GetCurrent().User.Value, "S-1-5-18", "S-1-5-32-544", "S-1-3-0", "S-1-3-4"
+    };
+
+    static void CheckAcl(FileSystemSecurity acl) {
+        var descriptor = new RawSecurityDescriptor(acl.GetSecurityDescriptorBinaryForm(), 0);
+        if (descriptor.DiscretionaryAcl == null || !Trusted.Contains(acl.GetOwner(typeof(SecurityIdentifier)).Value))
+            throw new SetupError("Проверьте владельца и права записи в личном профиле Windows.");
+        const FileSystemRights writes = FileSystemRights.Write | FileSystemRights.Delete |
+            FileSystemRights.DeleteSubdirectoriesAndFiles | FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership;
+        foreach (FileSystemAccessRule rule in acl.GetAccessRules(true, true, typeof(SecurityIdentifier))) {
+            if (rule.AccessControlType == AccessControlType.Allow && !Trusted.Contains(rule.IdentityReference.Value) &&
+                (rule.FileSystemRights & writes) != 0)
+                throw new SetupError("Другой пользователь может менять настройки подключения. PAT не сохранён.");
         }
     }
 
-    static void CheckAcl(FileSystemSecurity acl, HashSet<string> trusted) {
-        if (!trusted.Contains(acl.GetOwner(typeof(SecurityIdentifier)).Value))
-            throw new SetupError("Проверьте владельца личного профиля Codex.");
-        foreach (FileSystemAccessRule rule in acl.GetAccessRules(true, true, typeof(SecurityIdentifier))) {
-            if (rule.AccessControlType == AccessControlType.Allow && !trusted.Contains(rule.IdentityReference.Value) &&
-                (rule.FileSystemRights & (FileSystemRights.ReadData | FileSystemRights.WriteData | FileSystemRights.AppendData |
-                    FileSystemRights.Delete | FileSystemRights.DeleteSubdirectoriesAndFiles | FileSystemRights.ChangePermissions |
-                    FileSystemRights.TakeOwnership)) != 0)
-                throw new SetupError("Другим пользователям предоставлен доступ к профилю Codex. PAT не сохранён.");
+    static void CheckDirectory(string directory) {
+        string user = Path.GetFullPath(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)).TrimEnd('\\');
+        if (!Path.IsPathRooted(directory)) throw new SetupError("Нужен локальный личный профиль Codex.");
+        var path = new DirectoryInfo(directory);
+        if (path.FullName.StartsWith(@"\\") || !path.FullName.StartsWith(user + "\\", StringComparison.OrdinalIgnoreCase))
+            throw new SetupError("Нужен профиль в каталоге вашего пользователя Windows.");
+        for (; path != null; path = path.Parent) {
+            if ((path.Attributes & FileAttributes.ReparsePoint) != 0)
+                throw new SetupError("Каталог личных настроек находится за файловой ссылкой.");
+            CheckAcl(path.GetAccessControl());
+            if (String.Equals(path.FullName, user, StringComparison.OrdinalIgnoreCase)) break;
         }
+    }
+
+    static void CheckFile(string path) {
+        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            throw new SetupError("Файл личных настроек является ссылкой.");
+        CheckAcl(File.GetAccessControl(path));
+    }
+
+    static void CheckProfile() {
+        string home = Environment.GetEnvironmentVariable("CODEX_HOME") ??
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+        CheckDirectory(home);
+        string config = Path.Combine(home, "config.toml");
+        if (File.Exists(config)) CheckFile(config);
+    }
+
+    // A stable per-user path keeps existing connections working across plugin cache upgrades.
+    static string InstallProvider() {
+        string directory = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        CheckDirectory(directory);
+        foreach (string part in new[]{"SwornCard", "Codex"}) {
+            directory = Path.Combine(directory, part);
+            Directory.CreateDirectory(directory);
+            CheckDirectory(directory);
+        }
+        string destination = Path.Combine(directory, "SwornCardSetup.exe");
+        if (destination.IndexOfAny(new[]{'%', '!', '"', '\r', '\n'}) >= 0)
+            throw new SetupError("Путь к личной папке приложений несовместим с командой Codex.");
+        string source = Application.ExecutablePath;
+        if (File.Exists(destination)) {
+            CheckFile(destination);
+            using (var hash = SHA256.Create())
+            using (var current = File.OpenRead(destination))
+            using (var shipped = File.OpenRead(source))
+                if (hash.ComputeHash(current).SequenceEqual(hash.ComputeHash(shipped))) return destination;
+        }
+        string temp = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".tmp");
+        try {
+            File.Copy(source, temp);
+            if (File.Exists(destination)) File.Replace(temp, destination, null);
+            else File.Move(temp, destination);
+            CheckFile(destination);
+        } finally { if (File.Exists(temp)) File.Delete(temp); }
+        return destination;
     }
 
     static async Task<object> Rpc(Process p, int id, string method, object args) {
@@ -133,7 +176,8 @@ internal static class Setup {
         throw new SetupError("Codex не подтвердил изменение. Можно повторить настройку.");
     }
 
-    static async Task WriteSettings(Process p, string server, string secret) {
+    static async Task WriteSettings(Process p, string connection, string secret) {
+        string server = "sworncard_" + connection;
         await Rpc(p, 1, "initialize", new {clientInfo = new {name = "sworncard-setup", version = "1"}});
         await p.StandardInput.WriteLineAsync("{\"method\":\"initialized\"}");
         object read = await Rpc(p, 2, "config/read", new {includeLayers = true});
@@ -141,18 +185,24 @@ internal static class Setup {
         object personal = layers.Single(layer => Equals(Get(layer, "name", "type"), "user"));
         string version = Get(personal, "version") as string;
         if (String.IsNullOrEmpty(version)) throw new SetupError("Codex не подтвердил версию личного профиля.");
+        string provider = "\"" + InstallProvider() + "\" --mcp-headers " + connection;
         foreach (object layer in layers) {
             object entry = Get(layer, "config", "mcp_servers", server);
             if (entry == null) continue;
             var map = entry as IDictionary<string, object>;
             var headers = Get(entry, "http_headers") as IDictionary<string, object>;
+            var oldHeader = Get(headers, "Authorization") as string;
+            bool previousHeader = headers != null && headers.Count == 1 && oldHeader != null &&
+                oldHeader.StartsWith("Bearer ", StringComparison.Ordinal) &&
+                Token.Match(oldHeader.Substring(7)).Groups[1].Value == connection;
+            bool ownProvider = Equals(Get(entry, "http_headers_helper"), provider);
             if (layer != personal || map == null || map.Count != 2 || !Equals(Get(entry, "url"), Endpoint) ||
-                headers == null || headers.Count != 1 || !headers.ContainsKey("Authorization"))
+                (!previousHeader && !ownProvider))
                 throw new SetupError("У этого подключения уже есть другие настройки MCP. Они сохранены.");
         }
         var edits = new List<object> { new {
             keyPath = "mcp_servers." + server, mergeStrategy = "replace",
-            value = new { url = Endpoint, http_headers = new {Authorization = "Bearer " + secret} }
+            value = new { url = Endpoint, http_headers_helper = provider }
         }};
         object plugin = Get(personal, "config", "plugins", Plugin);
         string legacy = Environment.GetEnvironmentVariable("SWORNCARD_CONNECT_PAT");
@@ -161,6 +211,10 @@ internal static class Setup {
         if (Equals(Get(plugin, "enabled"), true) &&
             (sameConnection || (String.IsNullOrEmpty(legacy) && Get(plugin, "mcp_servers", "sworncard", "enabled") == null)))
             edits.Add(new {keyPath = "plugins." + Plugin + ".mcp_servers.sworncard.enabled", value = false, mergeStrategy = "replace"});
+        // Staging a credential first preserves a working legacy configuration if the CAS fails.
+        // A retry writes the same connection slot and finishes the same registration.
+        try { WindowsCredential.Save(connection, secret); }
+        catch (IOException) { throw new SetupError("Диспетчер учётных данных Windows не подтвердил сохранение PAT."); }
         object written = await Rpc(p, 3, "config/batchWrite", new {edits, expectedVersion = version});
         if (!Equals(Get(written, "status"), "ok")) throw new SetupError("Личная настройка переопределена политикой Codex.");
     }
@@ -172,7 +226,7 @@ internal static class Setup {
         string binary = DesktopBinary();
         using (var p = Start(binary, "app-server --listen stdio://")) {
             try {
-                var work = WriteSettings(p, "sworncard_" + match.Groups[1].Value, secret);
+                var work = WriteSettings(p, match.Groups[1].Value, secret);
                 if (await Task.WhenAny(work, Task.Delay(25000)) != work)
                     throw new SetupError("Codex не ответил вовремя. Можно повторить настройку.");
                 await work;
@@ -183,6 +237,7 @@ internal static class Setup {
 
     [STAThread]
     static int Main(string[] args) {
+        if (args.Length == 2 && args[0] == "--mcp-headers") return WindowsCredential.Supply(args[1]);
         if (args.Length != 0 || !Environment.UserInteractive) return 2;
         Application.EnableVisualStyles();
         try {
@@ -198,7 +253,7 @@ internal static class Setup {
                 ClientSize = new Size(466,220), AutoScaleMode = AutoScaleMode.Font}) {
             var prompt = new Label {Text = "Вставьте PAT подключения из кабинета Idemnia.\r\nСервер: " + Endpoint, AutoSize = true, Left = 16, Top = 15};
             var token = new TextBox {Name = "PersonalAccessToken", AccessibleName = "PAT", UseSystemPasswordChar = true, Left = 16, Top = 62, Width = 430};
-            var status = new Label {Name = "Status", Text = "Токен будет сохранён в личных настройках Codex на этом компьютере.", Left = 16, Top = 99, Width = 430, Height = 60};
+            var status = new Label {Name = "Status", Text = "Токен будет сохранён в Диспетчере учётных данных Windows для вашего пользователя.", Left = 16, Top = 99, Width = 430, Height = 60};
             var save = new Button {Name = "Save", Text = "Сохранить", Left = 233, Top = 174, Width = 105};
             var cancel = new Button {Name = "Cancel", Text = "Отмена", Left = 346, Top = 174, Width = 100, DialogResult = DialogResult.Cancel};
             form.Controls.AddRange(new Control[]{prompt, token, status, save, cancel});

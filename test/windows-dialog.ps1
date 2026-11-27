@@ -91,6 +91,15 @@ try {
     $desktop = Start-Process (Join-Path $app.InstallLocation 'app/ChatGPT.exe') -PassThru
     $desktopWindow = Wait-For { (Get-Process -Name ChatGPT -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1) } 'official Desktop window'
     Write-Host "Opened clean official Codex Desktop $($app.Version)"
+    # Start with the published version that showed the field report. Replace just its catalogue
+    # registration, as required by Codex when a marketplace was pinned to a different ref.
+    $repo = 'https://github.com/idemnia/sworncard-connect-codex.git'
+    & $codex plugin marketplace add $repo --ref v0.2.0-alpha.5
+    if ($LASTEXITCODE) {throw 'Previous marketplace installation failed'}
+    & $codex plugin add sworncard-connect@sworncard-connect
+    if ($LASTEXITCODE) {throw 'Previous plugin installation failed'}
+    & $codex plugin marketplace remove sworncard-connect
+    if ($LASTEXITCODE) {throw 'Previous marketplace ref could not be replaced'}
     if ($PublicRef) {
         & $codex plugin marketplace add https://github.com/idemnia/sworncard-connect-codex.git --ref $PublicRef
     } else { & $codex plugin marketplace add $workspace }
@@ -98,8 +107,9 @@ try {
     & $codex plugin add sworncard-connect@sworncard-connect
     if ($LASTEXITCODE) {throw 'Plugin installation failed'}
     $cache = Join-Path $env:CODEX_HOME 'plugins/cache/sworncard-connect/sworncard-connect'
-    $versions = @(Get-ChildItem -LiteralPath $cache -Directory)
-    if ($versions.Count -ne 1) {throw 'Expected a single installed plugin version in the clean profile'}
+    $expected = (Get-Content -Raw -LiteralPath (Join-Path $workspace 'codex/.codex-plugin/plugin.json') | ConvertFrom-Json).version
+    $versions = @(Get-ChildItem -LiteralPath $cache -Directory | Where-Object Name -eq $expected)
+    if ($versions.Count -ne 1) {throw 'Expected the current installed plugin version'}
     $manifest = Get-Content -Raw -LiteralPath (Join-Path $versions[0].FullName '.codex-plugin/plugin.json') | ConvertFrom-Json
     if ($manifest.name -ne 'sworncard-connect' -or $manifest.version -ne $versions[0].Name) {throw 'Installed manifest and cache disagree'}
     if ($PublicRef -and $PublicRef -ne "v$($manifest.version)") {throw 'The public release tag and installed plugin version disagree'}
@@ -109,18 +119,67 @@ try {
         throw 'Installed Windows dialog differs from the verified independent build'
     }
     $config = Join-Path $env:CODEX_HOME 'config.toml'
+    # Model the field report: a separate Windows principal has inherited read/execute on config.toml.
+    $observer = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-546')
+    $acl = Get-Acl $env:CODEX_HOME
+    $readRule = [Security.AccessControl.FileSystemAccessRule]::new($observer,'ReadAndExecute,Synchronize','ContainerInherit,ObjectInherit','None','Allow')
+    $acl.AddAccessRule($readRule)
+    Set-Acl $env:CODEX_HOME $acl
+    $childRules = (Get-Acl $config).GetAccessRules($false,$true,[Security.Principal.SecurityIdentifier])
+    if (!($childRules | Where-Object {$_.IdentityReference.Value -eq $observer.Value -and ($_.FileSystemRights -band 1)})) {throw 'Missing inherited sandbox-shaped read rule'}
     $original = (Get-FileHash $config).Hash
     $window = Open-Setup
     Click (Element $window 'Cancel')
     if (!$dialog.WaitForExit(5000) -or (Get-FileHash $config).Hash -ne $original) {throw 'Cancellation changed the configuration'}
     $id = 'pc_' + (New-Part)
+    # Exercise the installed provider's authorization policy, without touching any credential.
+    $assembly = [Reflection.Assembly]::Load([IO.File]::ReadAllBytes($installed))
+    $policy = $assembly.GetType('WindowsCredential').GetMethod('MatchesDesktopSession', [Reflection.BindingFlags]'Static,NonPublic')
+    foreach ($case in @(
+        @{ Inputs=@($false,$false,$sid,$sid,[long]1,[long]1); Allowed=$true },
+        @{ Inputs=@($true,$false,$sid,$sid,[long]1,[long]1); Allowed=$false },
+        @{ Inputs=@($false,$true,$sid,$sid,[long]1,[long]1); Allowed=$false },
+        @{ Inputs=@($false,$false,$observer,$sid,[long]1,[long]1); Allowed=$false },
+        @{ Inputs=@($false,$false,$sid,$sid,[long]2,[long]1); Allowed=$false }
+    )) {
+        if ($policy.Invoke($null, $case.Inputs) -ne $case.Allowed) {throw 'Desktop user/logon policy mismatch'}
+    }
+    # Public, unissued fixture ID. A normal process invoking the provider cannot receive credentials.
+    $probeInfo = [Diagnostics.ProcessStartInfo]::new($installed, "--mcp-headers $id")
+    $probeInfo.UseShellExecute = $false
+    $probeInfo.RedirectStandardOutput = $true
+    $probe = [Diagnostics.Process]::Start($probeInfo)
+    if (!$probe.WaitForExit(5000) -or $probe.ExitCode -ne 2 -or $probe.StandardOutput.ReadToEnd().Length) {throw 'Provider accepted an ordinary caller'}
+    $probe.Dispose()
     $old = ''
-    foreach ($stage in @('create','rotate')) {
+    $tokens = @()
+    # A writable profile must still fail before a credential is staged.
+    $fileAcl = Get-Acl $config
+    $changed = Get-Acl $config
+    $changed.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($observer,'Write','Allow'))
+    Set-Acl $config $changed
+    try {
+        $window = Open-Setup
+        Set-Field (Element $window 'PersonalAccessToken') ('scpat1.' + $id + '.' + (New-Part))
+        Click (Element $window 'Save')
+        $null = Wait-For {(Element $window 'Status').Current.Name -like '*может менять настройки*'} 'refusal on a writable config'
+        Click (Element $window 'Cancel')
+        if (!$dialog.WaitForExit(5000) -or (Get-FileHash $config).Hash -ne $original) {throw 'Writable configuration was changed'}
+    } finally {Set-Acl $config $fileAcl}
+    foreach ($stage in @('create','rotate','migrate')) {
         if ($stage -eq 'rotate') {
             # Model the previous release's working bundled server for this same connection.
             $env:SWORNCARD_CONNECT_PAT = $old
             $settings = [IO.File]::ReadAllText($config)
             $settings = $settings.Replace('enabled = false', 'enabled = true')
+            [IO.File]::WriteAllText($config,$settings,[Text.UTF8Encoding]::new($false))
+        }
+        if ($stage -eq 'migrate') {
+            # One old-format record, only in this disposable profile. No real credential is used.
+            $settings = [IO.File]::ReadAllText($config)
+            $legacyTable = "[mcp_servers.sworncard_$id.http_headers]`r`nAuthorization = `"Bearer $old`""
+            $settings = [regex]::Replace($settings,'(?m)^http_headers_helper = [^\r\n]+','') + "`r`n$legacyTable`r`n"
+            if (!$settings.Contains("Bearer $old")) {throw 'Missing synthetic legacy migration fixture'}
             [IO.File]::WriteAllText($config,$settings,[Text.UTF8Encoding]::new($false))
         }
         $window = Open-Setup
@@ -143,7 +202,8 @@ try {
         Click (Element $window 'Save')
         if (!$dialog.WaitForExit(5000) -or $dialog.ExitCode -ne 0) {throw 'Setup did not close successfully'}
         $text = [IO.File]::ReadAllText($config)
-        if (!$text.Contains("sworncard_$id") -or !$text.Contains("Bearer $token") -or !$text.Contains('https://connect.sworncard.ru/mcp') -or ($old -and $text.Contains($old))) {throw 'Personal configuration mismatch'}
+        if (!$text.Contains("sworncard_$id") -or $text.Contains($token) -or !$text.Contains("http_headers_helper") -or !$text.Contains('https://connect.sworncard.ru/mcp') -or ($old -and $text.Contains($old))) {throw 'Personal configuration mismatch'}
+        $tokens += $token
         $old = $token
         Write-Host "Passed Windows GUI step: $stage"
     }
@@ -157,7 +217,7 @@ try {
             if (!$desktopWindow.WaitForExit(5000)) {throw 'Clean Desktop did not close'}
         }
     }
-    python (Join-Path $PSScriptRoot 'windows-catalogue.py') $codex
+    ($tokens -join ' ') | python (Join-Path $PSScriptRoot 'windows-catalogue.py') $codex
     if ($LASTEXITCODE) {throw 'Catalogue check failed'}
 } finally {
     if ($dialog -and !$dialog.HasExited) { $dialog.Kill() }
