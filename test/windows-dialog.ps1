@@ -105,7 +105,13 @@ try {
     $id = 'pc_' + (New-Part)
     $old = ''
     foreach ($stage in @('create','rotate')) {
-        if ($stage -eq 'rotate') { $env:SWORNCARD_CONNECT_PAT = $old }
+        if ($stage -eq 'rotate') {
+            # Model the previous release's working bundled server for this same connection.
+            $env:SWORNCARD_CONNECT_PAT = $old
+            $settings = [IO.File]::ReadAllText($config)
+            $settings = $settings.Replace('enabled = false', 'enabled = true')
+            [IO.File]::WriteAllText($config,$settings,[Text.UTF8Encoding]::new($false))
+        }
         $window = Open-Setup
         $field = Element $window 'PersonalAccessToken'
         $button = Element $window 'Save'
