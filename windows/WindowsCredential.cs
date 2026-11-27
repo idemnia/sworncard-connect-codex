@@ -87,14 +87,18 @@ internal static class WindowsCredential {
     }
     // Credential Manager scopes the slot to the Windows user/logon. Do not release it from
     // a restricted token or AppContainer, even if its process has a familiar ancestor.
+    static bool MatchesDesktopSession(bool restricted, bool appContainer, SecurityIdentifier user,
+            SecurityIdentifier desktopUser, long logon, long desktopLogon) {
+        return !restricted && !appContainer && user.Equals(desktopUser) && logon == desktopLogon;
+    }
     static bool IsDesktopUser(Process client) {
         SafeAccessTokenHandle handle;
         if (!OpenProcessToken(client.Handle, 8, out handle)) return false;
         using (handle)
         using (var desktop = new WindowsIdentity(handle.DangerousGetHandle()))
         using (var current = WindowsIdentity.GetCurrent()) {
-            return !IsTokenRestricted(current.Token) && !AppContainer(current.Token) &&
-                current.User == desktop.User && LogonId(current.Token) == LogonId(desktop.Token);
+            return MatchesDesktopSession(IsTokenRestricted(current.Token), AppContainer(current.Token),
+                current.User, desktop.User, LogonId(current.Token), LogonId(desktop.Token));
         }
     }
     internal static int Supply(string id) {
