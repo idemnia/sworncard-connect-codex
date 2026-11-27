@@ -34,6 +34,9 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         if not secrets.compare_digest(self.headers.get("Authorization", ""), header):
             self.send_error(401)
             return
+        if self.headers.get("X-SwornCard-Diagnostic") != "fixture-only":
+            self.send_error(400)
+            return
         event = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         method = event["method"]
         calls.append(method)
@@ -73,7 +76,12 @@ with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fixture) as fixture:
     threading.Thread(target=fixture.serve_forever, daemon=True).start()
     try:
         # Only substitute the endpoint in this disposable profile after checking the shipped pin.
-        config.write_text(raw.replace('https://connect.sworncard.ru/mcp', f'http://127.0.0.1:{fixture.server_port}/mcp'), encoding='utf-8')
+        # Compatibility probe for the built-in Windows header hook. Only a public fixture marker is returned.
+        method = json.dumps('echo {"X-SwornCard-Diagnostic":"fixture-only"}')
+        configured = raw.replace("https://connect.sworncard.ru/mcp", f"http://127.0.0.1:{fixture.server_port}/mcp")
+        section = f"[mcp_servers.{name}]"
+        assert section in configured
+        config.write_text(configured.replace(section, section + "\nhttp_headers_helper = " + method), encoding="utf-8")
         # Reopen the official GUI with the saved profile and the isolated target in place.
         desktop = Path(sys.argv[1]).parent.parent / "ChatGPT.exe"
         subprocess.run(["powershell.exe", "-NoProfile", "-File", str(Path(__file__).with_name("reopen-desktop.ps1")),
@@ -87,7 +95,7 @@ with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fixture) as fixture:
             result = rpc(p, 3, "mcpServer/tool/call", {"threadId": t["thread"]["id"], "server": name,
                                                       "tool": "list_connections", "arguments": {}})
             assert "Synthetic Windows catalogue" in json.dumps(result) and "tools/call" in calls
-            print("Passed: restarted Windows Desktop engine authenticated and returned the synthetic catalogue.")
+            print("Passed: the Windows Desktop engine used native http_headers_helper to deliver the public marker to loopback.")
         finally:
             p.kill(); p.wait(timeout=10)
     finally:
