@@ -88,10 +88,15 @@ module SworncardSetup
           if layers.any? { |layer| layer != personal && layer.dig('config', 'mcp_servers', server) }
             raise SetupError, 'Этой записью MCP управляет другой уровень настроек Codex.'
           end
-          written = rpc(input, output, 3, 'config/value/write', {
-            keyPath: "mcp_servers.#{server}", value: value, mergeStrategy: 'replace',
-            expectedVersion: personal.fetch('version')
-          })
+          edits = [{keyPath: "mcp_servers.#{server}", value: value, mergeStrategy: 'replace'}]
+          # A fresh Mac otherwise also starts the bundled environment-based server without a PAT.
+          plugin = 'sworncard-connect@sworncard-connect'
+          settings = personal.dig('config', 'plugins', plugin)
+          if settings && settings['enabled'] && !ENV.key?('SWORNCARD_CONNECT_PAT') &&
+             settings.dig('mcp_servers', 'sworncard', 'enabled').nil?
+            edits << {keyPath: "plugins.#{plugin}.mcp_servers.sworncard.enabled", value: false, mergeStrategy: 'replace'}
+          end
+          written = rpc(input, output, 3, 'config/batchWrite', {edits: edits, expectedVersion: personal.fetch('version')})
           raise SetupError, 'Проверьте политику Codex: личная настройка переопределена.' unless written['status'] == 'ok'
         end
       ensure

@@ -31,12 +31,15 @@ Dir.mktmpdir('sworncard-test-') do |root|
   first = issue.call
   second = issue.call
   File.write(config, %[# retain this comment\n[mcp_servers.other]\nurl = "https://example.invalid/mcp"\n])
+  File.open(config, 'a') { |f| f.puts %[\n[plugins."sworncard-connect@sworncard-connect"]\nenabled = true] }
+  ENV.delete('SWORNCARD_CONNECT_PAT')
   File.chmod(0644, config)
   must_refuse { SworncardSetup.save(binary, url, first) }
   File.chmod(0600, config)
   SworncardSetup.save(binary, url, first)
   SworncardSetup.save(binary, url, second)
   data = File.read(config)
+  check(data.include?('enabled = false'), 'unused bundled MCP still enabled')
   check(data.include?(second) && !data.include?(first), 'rotation did not replace the token')
   check(data.include?('# retain this comment') && data.include?('[mcp_servers.other]'), 'unrelated configuration lost')
   check((File.stat(config).mode & 0077).zero?, 'config permissions')
