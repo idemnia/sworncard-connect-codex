@@ -1,5 +1,13 @@
 name: Codex plugin
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      public_ref:
+        description: Published marketplace tag to verify on a new Windows runner
+        required: false
+        type: string
 permissions:
   contents: read
 jobs:
@@ -29,7 +37,14 @@ jobs:
       - name: Build the Windows dialog
         shell: powershell
         run: ./windows/build.ps1 -Output "$env:RUNNER_TEMP/SwornCardSetup.exe"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-dialog
-          path: ${{ runner.temp }}/SwornCardSetup.exe
+      - name: Verify the shipped executable matches its source
+        shell: powershell
+        run: |
+          $built = (Get-FileHash "$env:RUNNER_TEMP/SwornCardSetup.exe").Hash
+          $shipped = (Get-FileHash "codex/skills/sworncard-setup/scripts/SwornCardSetup.exe").Hash
+          if ($built -ne $shipped) {throw 'Windows executable mismatch'}
+      - name: Test clean Desktop, masked dialog, cancellation, rotation and catalogue
+        shell: powershell
+        env:
+          PUBLIC_REF: ${{ inputs.public_ref }}
+        run: ./test/windows-dialog.ps1 -PublicRef $env:PUBLIC_REF
