@@ -102,6 +102,9 @@ try {
     if ($PublicRef -and $PublicRef -ne "v$($manifest.version)") {throw 'The public release tag and installed plugin version disagree'}
     $installed = Join-Path $versions[0].FullName "skills/sworncard-setup/scripts/$exeName"
     if (!(Test-Path -LiteralPath $installed)) {throw 'Missing installed Windows dialog'}
+    if ((Get-FileHash -LiteralPath $installed).Hash -ne (Get-FileHash -LiteralPath (Join-Path $env:RUNNER_TEMP $exeName)).Hash) {
+        throw 'Installed Windows dialog differs from the verified independent build'
+    }
     $config = Join-Path $env:CODEX_HOME 'config.toml'
     $original = (Get-FileHash $config).Hash
     $window = Open-Setup

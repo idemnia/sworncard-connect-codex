@@ -74,6 +74,12 @@ with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fixture) as fixture:
     try:
         # Only substitute the endpoint in this disposable profile after checking the shipped pin.
         config.write_text(raw.replace('https://connect.sworncard.ru/mcp', f'http://127.0.0.1:{fixture.server_port}/mcp'), encoding='utf-8')
+        # Reopen the official GUI with the saved profile and the isolated target in place.
+        desktop = Path(sys.argv[1]).parent.parent / "ChatGPT.exe"
+        subprocess.run(["powershell.exe", "-NoProfile", "-File", str(Path(__file__).with_name("reopen-desktop.ps1")),
+                        str(desktop)], check=True, timeout=70)
+        if "initialize" in calls:
+            print("Reopened Desktop contacted the authenticated fixture.")
         p = subprocess.Popen([sys.argv[1], "app-server", "--listen", "stdio://"], cwd=home.parent,
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, encoding="utf-8")
         try:
