@@ -14,6 +14,8 @@ using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
+[assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8")]
+
 internal static class Setup {
     const string Endpoint = "https://connect.sworncard.ru/mcp";
     const string Plugin = "sworncard-connect@sworncard-connect";
@@ -153,8 +155,11 @@ internal static class Setup {
             value = new { url = Endpoint, http_headers = new {Authorization = "Bearer " + secret} }
         }};
         object plugin = Get(personal, "config", "plugins", Plugin);
-        if (Equals(Get(plugin, "enabled"), true) && Get(plugin, "mcp_servers", "sworncard", "enabled") == null &&
-            Environment.GetEnvironmentVariable("SWORNCARD_CONNECT_PAT") == null)
+        string legacy = Environment.GetEnvironmentVariable("SWORNCARD_CONNECT_PAT");
+        bool sameConnection = legacy != null && Token.Match(legacy).Success &&
+            "sworncard_" + Token.Match(legacy).Groups[1].Value == server;
+        if (Equals(Get(plugin, "enabled"), true) &&
+            (sameConnection || (String.IsNullOrEmpty(legacy) && Get(plugin, "mcp_servers", "sworncard", "enabled") == null)))
             edits.Add(new {keyPath = "plugins." + Plugin + ".mcp_servers.sworncard.enabled", value = false, mergeStrategy = "replace"});
         object written = await Rpc(p, 3, "config/batchWrite", new {edits, expectedVersion = version});
         if (!Equals(Get(written, "status"), "ok")) throw new SetupError("Личная настройка переопределена политикой Codex.");

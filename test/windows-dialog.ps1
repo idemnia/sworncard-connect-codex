@@ -2,6 +2,25 @@
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 $ui = [Windows.Automation.AutomationElement]
+# Some Server WinForms providers expose native child controls as Pane. Send test input
+# only to HWNDs owned by this installation of our dialog in the disposable runner.
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class DialogTest {
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out int pid);
+  [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr hwnd, int index);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessageTimeout(IntPtr hwnd, uint msg, IntPtr w, string l, uint flags, uint ms, out IntPtr result);
+  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr w, IntPtr l);
+}
+'@
+function Own-Handle($el) {
+    $hwnd = [IntPtr]::new($el.Current.NativeWindowHandle)
+    $ownerId = 0
+    $null = [DialogTest]::GetWindowThreadProcessId($hwnd,[ref]$ownerId)
+    if ($hwnd -eq [IntPtr]::Zero -or $ownerId -ne $dialog.Id) {throw 'Wrong dialog control owner'}
+    return $hwnd
+}
 $app = Get-AppxPackage -Name OpenAI.Codex | Where-Object PackageFamilyName -eq 'OpenAI.Codex_2p2nqsd0c76g0'
 $codex = Join-Path $app.InstallLocation 'app/resources/codex.exe'
 $root = Join-Path $env:USERPROFILE ("sworncard-test-" + [Guid]::NewGuid().ToString('N'))
@@ -36,17 +55,19 @@ function Element($window, [string] $name) {
     $found = $window.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
     foreach ($child in $found) {
         $info = $child.Current
-        if ($name -eq 'PersonalAccessToken' -and $info.ControlType -eq [Windows.Automation.ControlType]::Edit) {return $child}
+        if ($name -eq 'PersonalAccessToken' -and ($info.ControlType -eq [Windows.Automation.ControlType]::Edit -or $info.ClassName -like "WindowsForms*.EDIT.*")) {return $child}
         if ($name -eq 'Save' -and $info.Name -in @('Сохранить','Готово')) {return $child}
         if ($name -eq 'Cancel' -and $info.Name -eq 'Отмена') {return $child}
-        if ($name -eq 'Status' -and $info.ControlType -eq [Windows.Automation.ControlType]::Text -and $info.Name -notlike 'Вставьте PAT*') {return $child}
+        if ($name -eq 'Status' -and ($info.ControlType -eq [Windows.Automation.ControlType]::Text -or $info.ClassName -like "WindowsForms*.STATIC.*") -and $info.Name -notlike 'Вставьте PAT*') {return $child}
     }
 }
 function Set-Field($element, [string]$value) {
-    $element.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).SetValue($value)
+    $result = [IntPtr]::Zero
+    $sent = [DialogTest]::SendMessageTimeout((Own-Handle $element),0x000C,[IntPtr]::Zero,$value,2,3000,[ref]$result)
+    if ($sent -eq [IntPtr]::Zero -or $result -eq [IntPtr]::Zero) {throw 'Test edit rejected input'}
 }
 function Click($element) {
-    $element.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+    if (![DialogTest]::PostMessage((Own-Handle $element),0x00F5,[IntPtr]::Zero,[IntPtr]::Zero)) {throw 'Button did not receive test click'}
 }
 function New-Part {
     $bytes = New-Object byte[] 32
@@ -58,14 +79,8 @@ function Open-Setup {
     $script:dialog = Start-Process $installed -PassThru
     $hwnd = Wait-For { $dialog.Refresh(); if ($dialog.HasExited) {throw "Dialog exited: $($dialog.ExitCode)"}; if ($dialog.MainWindowHandle -ne 0) {$dialog.MainWindowHandle} } 'WinForms window'
     $window = $ui::FromHandle($hwnd)
-    Write-Host "Helper window: $($window.Current.ClassName) | $($window.Current.Name)"
-    $snapshot = $window.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
-    foreach ($el in $snapshot) {
-        $item = $el.Current
-        if (!$item.IsPassword) {Write-Host "Initial control: $($item.ClassName) | $($item.ControlType.ProgrammaticName) | $($item.Name)"}
-    }
     $field = Wait-For {Element $window 'PersonalAccessToken'} 'password edit control'
-    if (!$field.Current.IsPassword) {throw 'Masked PAT field missing'}
+    if (([DialogTest]::GetWindowLong((Own-Handle $field),-16) -band 0x20) -eq 0) {throw 'Masked PAT field missing'}
     return $window
 }
 
@@ -90,6 +105,7 @@ try {
     $id = 'pc_' + (New-Part)
     $old = ''
     foreach ($stage in @('create','rotate')) {
+        if ($stage -eq 'rotate') { $env:SWORNCARD_CONNECT_PAT = $old }
         $window = Open-Setup
         $field = Element $window 'PersonalAccessToken'
         $button = Element $window 'Save'
@@ -115,6 +131,7 @@ try {
         Write-Host "Passed Windows GUI step: $stage"
     }
     # A restarted process must actually authenticate. Use a loopback fixture; the installer pins the real RU URL.
+    $env:SWORNCARD_CONNECT_PAT = $null
     python (Join-Path $PSScriptRoot 'windows-catalogue.py') $codex
     if ($LASTEXITCODE) {throw 'Catalogue check failed'}
 } finally {
