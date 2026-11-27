@@ -30,7 +30,17 @@ function Wait-For([scriptblock] $condition, [string] $description) {
     throw "Timed out waiting for $description"
 }
 function Element($window, [string] $name) {
-    $window.FindFirst([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.PropertyCondition]::new($ui::AutomationIdProperty,$name))
+    $byId = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.PropertyCondition]::new($ui::AutomationIdProperty,$name))
+    if ($byId) { return $byId }
+    # Older WinForms UIA providers expose Win32 IDs; match only children of this test-owned window.
+    $found = $window.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+    foreach ($child in $found) {
+        $info = $child.Current
+        if ($name -eq 'PersonalAccessToken' -and $info.ControlType -eq [Windows.Automation.ControlType]::Edit) {return $child}
+        if ($name -eq 'Save' -and $info.Name -in @('Сохранить','Готово')) {return $child}
+        if ($name -eq 'Cancel' -and $info.Name -eq 'Отмена') {return $child}
+        if ($name -eq 'Status' -and $info.ControlType -eq [Windows.Automation.ControlType]::Text -and $info.Name -notlike 'Вставьте PAT*') {return $child}
+    }
 }
 function Set-Field($element, [string]$value) {
     $element.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).SetValue($value)
@@ -48,8 +58,8 @@ function Open-Setup {
     $script:dialog = Start-Process $installed -PassThru
     $hwnd = Wait-For { $dialog.Refresh(); if ($dialog.HasExited) {throw "Dialog exited: $($dialog.ExitCode)"}; if ($dialog.MainWindowHandle -ne 0) {$dialog.MainWindowHandle} } 'WinForms window'
     $window = $ui::FromHandle($hwnd)
-    $field = Element $window 'PersonalAccessToken'
-    if (!$field -or !$field.Current.IsPassword) {throw 'Masked PAT field missing'}
+    $field = Wait-For {Element $window 'PersonalAccessToken'} 'password edit control'
+    if (!$field.Current.IsPassword) {throw 'Masked PAT field missing'}
     return $window
 }
 
